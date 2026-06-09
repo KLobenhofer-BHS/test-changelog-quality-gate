@@ -22,3 +22,9 @@ export const Destructive: Story = {
     children: 'Delete',
   },
 };
+export const Loading: Story = {
+  args: {
+    loading: true,
+    children: 'Loading...',
+  },
+};
