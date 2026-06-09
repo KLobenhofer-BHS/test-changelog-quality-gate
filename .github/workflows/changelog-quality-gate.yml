@@ -1,0 +1,182 @@
+name: Storybook Changelog Agent — Quality Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+
+jobs:
+  changelog-quality-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if story files changed
+        id: stories
+        run: |
+          CHANGED_STORIES=$(git diff --name-only origin/main...HEAD -- \
+            '*.stories.tsx' '*.stories.ts' '*.stories.jsx' '*.stories.js')
+
+          if [ -z "$CHANGED_STORIES" ]; then
+            echo "has_story_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_story_changes=true" >> $GITHUB_OUTPUT
+            echo "$CHANGED_STORIES" > /tmp/changed_stories.txt
+            echo "Changed story files:"
+            echo "$CHANGED_STORIES"
+          fi
+
+      - name: Check if CHANGELOG.mdx was updated
+        id: changelog
+        if: steps.stories.outputs.has_story_changes == 'true'
+        run: |
+          CHANGELOG_CHANGED=$(git diff --name-only origin/main...HEAD -- 'lib/CHANGELOG.mdx')
+
+          if [ -z "$CHANGELOG_CHANGED" ]; then
+            echo "changelog_updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "changelog_updated=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog suggestion with Claude
+        id: claude
+        if: |
+          steps.stories.outputs.has_story_changes == 'true' &&
+          steps.changelog.outputs.changelog_updated == 'false'
+        run: |
+          CHANGED_FILES=$(cat /tmp/changed_stories.txt)
+          DIFF_OUTPUT=$(git diff origin/main...HEAD -- \
+            '*.stories.tsx' '*.stories.ts' '*.stories.jsx' '*.stories.js' \
+            | head -c 12000)
+
+          PROMPT="You are a changelog writer for a Storybook component library called Digital Hub.
+          The developer forgot to update the changelog. Based on the Git diff below,
+          suggest a changelog entry they can copy into lib/CHANGELOG.mdx.
+
+          FORMAT RULES:
+          - Start with: ## Next Version ($(date +'%Y-%m-%d'))
+          - Use ### for section labels — only include sections that apply:
+              ### Major Changes
+              ### Minor Changes
+              ### Patches
+          - Each bullet starts with a dash (-)
+          - Use backticks for component names: \`Button\`, \`DateTimePicker\`
+          - Use bold (**text**) for important or breaking changes under Major Changes
+          - Keep it brief: 1-5 bullets per section
+          - Output ONLY the version heading and sections — no preamble
+
+          CATEGORIZATION:
+          - Major Changes: breaking changes, removed components, renamed APIs
+          - Minor Changes: new components, new props, new variants, visual improvements
+          - Patches: bug fixes, styling corrections, accessibility fixes
+
+          Changed files:
+          $CHANGED_FILES
+
+          Git diff:
+          $DIFF_OUTPUT"
+
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "{
+              \"model\": \"claude-sonnet-4-5\",
+              \"max_tokens\": 800,
+              \"messages\": [{
+                \"role\": \"user\",
+                \"content\": $(echo "$PROMPT" | jq -Rs .)
+              }]
+            }")
+
+          SUGGESTION=$(echo "$RESPONSE" | jq -r '.content[0].text // "Could not generate suggestion."')
+          echo "$SUGGESTION" > /tmp/suggestion.txt
+          echo "Suggestion generated."
+
+      - name: Post suggestion as PR comment
+        if: |
+          steps.stories.outputs.has_story_changes == 'true' &&
+          steps.changelog.outputs.changelog_updated == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const suggestion = fs.readFileSync('/tmp/suggestion.txt', 'utf8').trim();
+            const changedFiles = fs.readFileSync('/tmp/changed_stories.txt', 'utf8').trim();
+
+            const fileList = changedFiles
+              .split('\n')
+              .filter(f => f.trim())
+              .map(f => `- \`${f.trim()}\``)
+              .join('\n');
+
+            const body = [
+              '## Changelog Quality Gate — Update Required',
+              '',
+              'Story files were changed in this PR but `lib/CHANGELOG.mdx` was not updated.',
+              '',
+              '**Changed story files:**',
+              fileList,
+              '',
+              '---',
+              '',
+              '**Suggested changelog entry (copy into `lib/CHANGELOG.mdx`):**',
+              '',
+              '```markdown',
+              suggestion,
+              '```',
+              '',
+              '---',
+              '',
+              'Please update `lib/CHANGELOG.mdx` before merging.',
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' &&
+              c.body.includes('Changelog Quality Gate')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if changelog not updated
+        if: |
+          steps.stories.outputs.has_story_changes == 'true' &&
+          steps.changelog.outputs.changelog_updated == 'false'
+        run: |
+          echo "CHANGELOG.mdx was not updated. Please update it before merging."
+          exit 1
+
+      - name: Pass if changelog is up to date
+        if: |
+          steps.stories.outputs.has_story_changes == 'false' ||
+          steps.changelog.outputs.changelog_updated == 'true'
+        run: |
+          echo "Changelog check passed."
