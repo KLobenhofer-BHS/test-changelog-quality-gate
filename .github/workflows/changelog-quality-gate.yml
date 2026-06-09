@@ -46,60 +46,20 @@ jobs:
             echo "changelog_updated=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate changelog suggestion with Claude
+      - name: Generate changelog suggestion (TEST MODE)
         id: claude
         if: |
           steps.stories.outputs.has_story_changes == 'true' &&
           steps.changelog.outputs.changelog_updated == 'false'
         run: |
-          CHANGED_FILES=$(cat /tmp/changed_stories.txt)
-          DIFF_OUTPUT=$(git diff origin/main...HEAD -- \
-            '*.stories.tsx' '*.stories.ts' '*.stories.jsx' '*.stories.js' \
-            | head -c 12000)
+          cat > /tmp/suggestion.txt << 'EOF'
+          ## Next Version (2026-06-09)
 
-          PROMPT="You are a changelog writer for a Storybook component library called Digital Hub.
-          The developer forgot to update the changelog. Based on the Git diff below,
-          suggest a changelog entry they can copy into lib/CHANGELOG.mdx.
+          ### Minor Changes
 
-          FORMAT RULES:
-          - Start with: ## Next Version ($(date +'%Y-%m-%d'))
-          - Use ### for section labels — only include sections that apply:
-              ### Major Changes
-              ### Minor Changes
-              ### Patches
-          - Each bullet starts with a dash (-)
-          - Use backticks for component names: \`Button\`, \`DateTimePicker\`
-          - Use bold (**text**) for important or breaking changes under Major Changes
-          - Keep it brief: 1-5 bullets per section
-          - Output ONLY the version heading and sections — no preamble
-
-          CATEGORIZATION:
-          - Major Changes: breaking changes, removed components, renamed APIs
-          - Minor Changes: new components, new props, new variants, visual improvements
-          - Patches: bug fixes, styling corrections, accessibility fixes
-
-          Changed files:
-          $CHANGED_FILES
-
-          Git diff:
-          $DIFF_OUTPUT"
-
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
-            -H "anthropic-version: 2023-06-01" \
-            -d "{
-              \"model\": \"claude-sonnet-4-5\",
-              \"max_tokens\": 800,
-              \"messages\": [{
-                \"role\": \"user\",
-                \"content\": $(echo "$PROMPT" | jq -Rs .)
-              }]
-            }")
-
-          SUGGESTION=$(echo "$RESPONSE" | jq -r '.content[0].text // "Could not generate suggestion."')
-          echo "$SUGGESTION" > /tmp/suggestion.txt
-          echo "Suggestion generated."
+          - `Button`: TEST — placeholder suggestion to verify the pipeline works
+          EOF
+          echo "Test mode: skipping Claude API call."
 
       - name: Post suggestion as PR comment
         if: |
