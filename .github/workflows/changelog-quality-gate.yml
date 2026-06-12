@@ -29,7 +29,6 @@ jobs:
             echo "has_story_changes=false" >> $GITHUB_OUTPUT
           else
             echo "has_story_changes=true" >> $GITHUB_OUTPUT
-            echo "$CHANGED_STORIES" > /tmp/changed_stories.txt
             echo "Changed story files:"
             echo "$CHANGED_STORIES"
           fi
@@ -46,55 +45,17 @@ jobs:
             echo "changelog_updated=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Generate changelog suggestion (TEST MODE)
-        id: claude
-        if: |
-          steps.stories.outputs.has_story_changes == 'true' &&
-          steps.changelog.outputs.changelog_updated == 'false'
-        run: |
-          cat > /tmp/suggestion.txt << 'EOF'
-          ## Next Version (2026-06-09)
-
-          ### Minor Changes
-
-          - `Button`: TEST — placeholder suggestion to verify the pipeline works
-          EOF
-          echo "Test mode: skipping Claude API call."
-
-      - name: Post suggestion as PR comment
+      - name: Post warning comment
         if: |
           steps.stories.outputs.has_story_changes == 'true' &&
           steps.changelog.outputs.changelog_updated == 'false'
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const suggestion = fs.readFileSync('/tmp/suggestion.txt', 'utf8').trim();
-            const changedFiles = fs.readFileSync('/tmp/changed_stories.txt', 'utf8').trim();
-
-            const fileList = changedFiles
-              .split('\n')
-              .filter(f => f.trim())
-              .map(f => `- \`${f.trim()}\``)
-              .join('\n');
-
             const body = [
               '## Changelog Quality Gate — Update Required',
               '',
               'Story files were changed in this PR but `lib/CHANGELOG.mdx` was not updated.',
-              '',
-              '**Changed story files:**',
-              fileList,
-              '',
-              '---',
-              '',
-              '**Suggested changelog entry (copy into `lib/CHANGELOG.mdx`):**',
-              '',
-              '```markdown',
-              suggestion,
-              '```',
-              '',
-              '---',
               '',
               'Please update `lib/CHANGELOG.mdx` before merging.',
             ].join('\n');
